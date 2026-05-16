@@ -50,8 +50,11 @@ EOF
 
 # These files NEED to be on the image.
 grep -F -e "ghcr.io/zirconium-dev" /etc/containers/policy.json
-stat /etc/pki/containers/zirconium.pub
-stat /etc/pki/containers/zirconium.pub
+grep -F -e "ghcr.io/bazzirco" /etc/containers/policy.json
+stat /usr/share/pki/containers/bazzirco.pub
+stat /usr/share/pki/containers/hawaii.pub
+stat /usr/share/pki/containers/jackrabbit.pub
+stat /usr/share/pki/containers/zirconium.pub
 stat /usr/bin/luks*tpm*
 stat /usr/bin/uupd
 stat /usr/lib/systemd/system/uupd.service
