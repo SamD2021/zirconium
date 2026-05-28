@@ -1,0 +1,23 @@
+FROM registry.fedoraproject.org/fedora:44
+
+RUN dnf install -y \
+    bubblewrap \
+    curl \
+    distribution-gpg-keys \
+    findutils \
+    git \
+    jq \
+    ostree \
+    python3 \
+    python3-gpg \
+    python3-hawkey \
+    python3-libcomps \
+    python3-libdnf5 \
+    python3-pip \
+    python3-unbound \
+    tar \
+    && dnf clean all
+
+RUN git clone --depth 1 https://github.com/systemd/mkosi.git /opt/mkosi
+
+ENTRYPOINT ["/opt/mkosi/bin/mkosi"]
