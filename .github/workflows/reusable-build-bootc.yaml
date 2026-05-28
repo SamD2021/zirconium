@@ -104,6 +104,31 @@ jobs:
           sudo mv mkosi /usr/src/mkosi
           sudo ln -sf "/usr/src/mkosi/bin/mkosi" /usr/bin/mkosi
 
+      - name: Prepare publish metadata
+        if: inputs.publish
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          OWNER="${REPOSITORY_OWNER,,}"
+          REGISTRY="ghcr.io/${OWNER}"
+          PLATFORM_REF="${REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${{ matrix.platform }}"
+
+          if [[ "${PLATFORM_REF}" =~ [A-Z] ]]; then
+            echo "Invalid uppercase container reference: ${PLATFORM_REF}" >&2
+            exit 1
+          fi
+
+          if [ -z "${SIGNING_SECRET}" ]; then
+            echo "SIGNING_SECRET is not set; images will be pushed unsigned."
+          fi
+
+          echo "IMAGE_REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
+          echo "PLATFORM_IMAGE_REF=${PLATFORM_REF}" >> "${GITHUB_ENV}"
+          echo "Publishing platform image: ${PLATFORM_REF}"
+          echo "Publishing manifest base: ${REGISTRY}/${IMAGE_NAME}"
+
       - name: Render configuration (for debugging)
         run: mkosi cat-config --debug
 
@@ -155,10 +180,16 @@ jobs:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
         run: |
-          set -x
-          PRIVATE_KEY_FILE="$(mktemp)"
-          echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
-          trap 'rm -f $PRIVATE_KEY_FILE' EXIT
+          set -xeuo pipefail
+
+          SIGN_ARGS=()
+          if [ -n "${SIGNING_SECRET}" ]; then
+            PRIVATE_KEY_FILE="$(mktemp)"
+            echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
+            trap 'rm -f "${PRIVATE_KEY_FILE}"' EXIT
+            SIGN_ARGS=("--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}")
+          fi
+
           sudo mkdir -p "/etc/containers/registries.d/"
           echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
 
@@ -166,7 +197,7 @@ jobs:
           # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           for _ in $(seq 2); do
-            podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile="${DIGESTFILE}" "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+            podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile="${DIGESTFILE}" "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "docker://${PLATFORM_IMAGE_REF}" "${SIGN_ARGS[@]}"
           done
           echo "remote_image_digest=$(< "${DIGESTFILE}")" | tee "${GITHUB_OUTPUT}"
 
@@ -282,6 +313,30 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
         run: echo "${GITHUB_TOKEN}" | podman login -u "${GITHUB_ACTOR}" --password-stdin "${REGISTRY}"
 
+      - name: Prepare publish metadata
+        if: inputs.publish
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          OWNER="${REPOSITORY_OWNER,,}"
+          REGISTRY="ghcr.io/${OWNER}"
+          MANIFEST_REF="${REGISTRY}/${IMAGE_NAME}"
+
+          if [[ "${MANIFEST_REF}" =~ [A-Z] ]]; then
+            echo "Invalid uppercase container reference: ${MANIFEST_REF}" >&2
+            exit 1
+          fi
+
+          if [ -z "${SIGNING_SECRET}" ]; then
+            echo "SIGNING_SECRET is not set; manifests will be pushed unsigned."
+          fi
+
+          echo "IMAGE_REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
+          echo "TARGET_MANIFEST=${MANIFEST_REF}" >> "${GITHUB_ENV}"
+          echo "Publishing manifest base: ${MANIFEST_REF}"
+
       - name: Fetch Build Outputs
         if: inputs.publish
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -297,16 +352,20 @@ jobs:
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           LABELS: ${{ steps.metadata.outputs.labels }}
           TAGS: ${{ steps.metadata.outputs.tags }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          set -x
+          set -xeuo pipefail
 
-          PRIVATE_KEY_FILE="$(mktemp)"
-          echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
-          trap 'rm -f $PRIVATE_KEY_FILE' EXIT
+          SIGN_ARGS=()
+          if [ -n "${SIGNING_SECRET}" ]; then
+            PRIVATE_KEY_FILE="$(mktemp)"
+            echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
+            trap 'rm -f "${PRIVATE_KEY_FILE}"' EXIT
+            SIGN_ARGS=("--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}")
+          fi
+
           sudo mkdir -p "/etc/containers/registries.d/"
           echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
-
-          TARGET_MANIFEST="${IMAGE_REGISTRY}/${IMAGE_NAME}"
 
           for digest_file in /tmp/artifacts/*.txt; do
             # Extract the platform from the file name
@@ -329,7 +388,7 @@ jobs:
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+                podman manifest push --all=false --compression-format=zstd "${TARGET_MANIFEST}" "docker://${TARGET_MANIFEST}:${TAG}" "${SIGN_ARGS[@]}"
               done <<< "${TAGS}"
             done
           done
